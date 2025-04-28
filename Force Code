@@ -1,0 +1,140 @@
+#include <HX711_ADC.h>
+#if defined(ESP8266) || defined(ESP32) || defined(AVR)
+#include <EEPROM.h>
+#endif
+
+const int MotorStatus = 9;
+
+// Weight Sensor 
+const int HX711_dout = 4;  // Replace with the correct pin
+const int HX711_sck = 5;   // Replace with the correct pin
+HX711_ADC LoadCell(HX711_dout, HX711_sck);
+
+// Data Storing 
+const int calVal_eepromAddress = 0;
+float calibrationValue;
+
+// Moving Average parameters
+const int movingAvgSizeLong = 100;  // Number of samples for long-term moving average
+const int movingAvgSizeShort = 10;   // Number of samples for short-term moving average
+float movingAvgArrayLong[movingAvgSizeLong];
+float movingAvgArrayShort[movingAvgSizeShort];
+int movingAvgIndexLong = 0;
+int movingAvgIndexShort = 0;
+float sumLong = 0;
+float sumShort = 0;
+
+// State variables for peak detection
+bool peakDetected = false;
+bool exitTriggered = false;
+
+// LED indicator
+const int ledPin = LED_BUILTIN;
+
+// Stabilization time (in milliseconds)
+const unsigned long stabilizationTime = 0;  // Adjust this time as needed
+unsigned long startTime;
+
+// Threshold for filtering small values
+const float valueThreshold = 45.0;  // Values below this will be ignored
+
+void setup() {
+    Serial.begin(57600);
+    pinMode(ledPin, OUTPUT);
+    pinMode(MotorStatus, OUTPUT);
+    digitalWrite(MotorStatus, LOW);
+    // Initialize the load cell
+    LoadCell.begin();
+    LoadCell.start(1000, true);
+    if (LoadCell.getTareTimeoutFlag()) {
+        Serial.println("Tare failed. Check the wiring and try again.");
+    } else {
+        long tareOffset = LoadCell.getTareOffset(); // Get the tare offset
+        LoadCell.setTareOffset(tareOffset);         // Set the tare offset
+        Serial.println("Tare successful.");
+    }
+
+    // Load calibration value from EEPROM or set default
+    EEPROM.get(calVal_eepromAddress, calibrationValue);
+    if (calibrationValue == 0 || isnan(calibrationValue)) {
+        calibrationValue = 1.0;  // Set a default calibration value if none is stored
+    }
+    LoadCell.setCalFactor(calibrationValue);
+
+    // Initialize the moving average arrays
+    for (int i = 0; i < movingAvgSizeLong; i++) {
+        movingAvgArrayLong[i] = 0;
+    }
+    for (int i = 0; i < movingAvgSizeShort; i++) {
+        movingAvgArrayShort[i] = 0;
+    }
+    sumLong = sumShort = 0;  // Initialize the sums for calculating the moving averages
+
+    Serial.println("Setup complete. Stabilizing...");
+    startTime = millis();  // Record the start time for the stabilization phase
+}
+
+void loop() {
+    // Wait for stabilization time before starting peak detection
+    if (millis() - startTime < stabilizationTime) {
+        return;  // Do nothing until the stabilization period is over
+    }
+
+    // Update the load cell readings
+    if (LoadCell.update()) {
+        float loadCellValue = LoadCell.getData();
+
+        // Apply threshold filter before peak detection
+        if (loadCellValue < valueThreshold) {
+            loadCellValue = 0;  // Ignore small fluctuations by setting them to zero
+        }
+
+        // Calculate the long-term moving average
+        sumLong -= movingAvgArrayLong[movingAvgIndexLong];
+        movingAvgArrayLong[movingAvgIndexLong] = loadCellValue;
+        sumLong += loadCellValue;
+        movingAvgIndexLong = (movingAvgIndexLong + 1) % movingAvgSizeLong;
+        float movingAvgLong = sumLong / movingAvgSizeLong;
+
+        // Calculate the short-term moving average
+        sumShort -= movingAvgArrayShort[movingAvgIndexShort];
+        movingAvgArrayShort[movingAvgIndexShort] = loadCellValue;
+        sumShort += loadCellValue;
+        movingAvgIndexShort = (movingAvgIndexShort + 1) % movingAvgSizeShort;
+        float movingAvgShort = sumShort / movingAvgSizeShort;
+
+        Serial.print("Load cell value: ");
+        Serial.print(loadCellValue);
+        Serial.print(" | Moving Average (Short): ");
+        Serial.print(movingAvgShort);
+        Serial.print(" | Moving Average (Long): ");
+        Serial.println(movingAvgLong);
+
+        // Peak detection logic: detect when movingAvgShort crosses below movingAvgLong
+        if (!peakDetected && movingAvgShort < movingAvgLong) {
+            peakDetected = true;
+            Serial.println("Peak detected.");
+        }
+
+        // Exit condition logic: detect when movingAvgShort crosses back above movingAvgLong after a peak
+        if (peakDetected && !exitTriggered && movingAvgShort > movingAvgLong) {
+            exitTriggered = true;
+            Serial.println("Exit condition met. Stopping operation.");
+            blinkLed();
+            // Reset states for the next detection cycle
+            peakDetected = false;
+            exitTriggered = false;
+        }
+    }
+}
+
+// Function to blink the built-in LED
+void blinkLed() {
+    digitalWrite(ledPin, HIGH);  // Turn on the LED
+    digitalWrite(MotorStatus, HIGH);  // Turn on the motor status
+
+    // Keep LED and motor on indefinitely
+    while (true) {
+        delay(1000);  // This delay keeps the loop from consuming too much CPU power
+    }
+}
