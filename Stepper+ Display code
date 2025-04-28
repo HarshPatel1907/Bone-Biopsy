@@ -1,0 +1,99 @@
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Motor Driver Pins
+const int stepPin = 10;
+const int dirPin = 2;
+const int enPin = 12;
+
+// Stop Sensor Pin
+const int stopPin = 8;
+
+// Display Settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+const int stepsPerMM = 1400;  // Steps needed to move 1mm
+int currentDistance = 0;      // Tracks distance moved
+bool moveForward = true;      // Movement direction
+
+void setup() {
+    Serial.begin(57600);
+
+    // Motor setup
+    pinMode(stepPin, OUTPUT);
+    pinMode(dirPin, OUTPUT);
+    pinMode(enPin, OUTPUT);
+    digitalWrite(enPin, LOW);  // Enable motor
+
+    // Stop sensor setup
+    pinMode(stopPin, INPUT);
+
+    // Display setup
+    if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+        Serial.println(F("SSD1306 allocation failed"));
+        for (;;);
+    }
+
+    // Show "ABT" for 3 seconds
+    display.clearDisplay();
+    display.setTextSize(3);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(30, 30);
+    display.println("ABT");
+    display.display();
+    delay(2000);
+}
+
+void loop() {
+    // If Pin 8 is HIGH, start moving back
+    if (digitalRead(stopPin) == HIGH) {
+        moveForward = false;
+    }
+
+    // Move forward until Pin 8 is HIGH
+    if (moveForward) {
+        moveMotor(true);  // Move forward
+        currentDistance++;
+    }
+    // Move backward to 0mm
+    else if (currentDistance > 0) {
+        moveMotor(false);  // Move backward
+        currentDistance--;
+    }
+
+    // Update display with current distance
+    updateDisplay();
+}
+
+// Function to move the motor
+void moveMotor(bool forward) {
+    digitalWrite(dirPin, forward ? HIGH : LOW);
+
+    for (int i = 0; i < stepsPerMM; i++) {
+        digitalWrite(stepPin, HIGH);
+        delayMicroseconds(2000);
+        digitalWrite(stepPin, LOW);
+        delayMicroseconds(2000);
+    }
+}
+
+// Function to update the OLED display
+void updateDisplay() {
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(20, 20);
+    display.print(currentDistance);
+    display.println(" MM");
+
+    // Progress bar
+    int barLength = map(currentDistance, 0, 50, 0, 100);
+    display.drawRect(10, 50, 100, 10, SSD1306_WHITE); // Outline
+    display.fillRect(10, 50, barLength, 10, SSD1306_WHITE); // Fill
+    display.display();
+}
